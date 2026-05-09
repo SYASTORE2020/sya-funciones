@@ -1,7 +1,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 //  SyA Store — Crear preferencia MercadoPago
 //  Netlify Function · Node 18+
-//  Env variable requerida: MP_ACCESS_TOKEN
+//  Env variables: MP_ACCESS_TOKEN
 // ─────────────────────────────────────────────────────────────────────────────
 
 const CORS = {
@@ -11,46 +11,31 @@ const CORS = {
   'Content-Type'                : 'application/json'
 };
 
+const WEBHOOK_URL = 'https://verdant-tapioca-41d95c.netlify.app/.netlify/functions/mp-webhook';
+
 exports.handler = async (event) => {
 
-  // ── Preflight CORS ──────────────────────────────────────────────────────────
-  if (event.httpMethod === 'OPTIONS') {
-    return { statusCode: 204, headers: CORS, body: '' };
-  }
+  if (event.httpMethod === 'OPTIONS') return { statusCode: 204, headers: CORS, body: '' };
+  if (event.httpMethod !== 'POST')    return { statusCode: 405, headers: CORS, body: JSON.stringify({ error: 'Method not allowed' }) };
 
-  if (event.httpMethod !== 'POST') {
-    return { statusCode: 405, headers: CORS, body: JSON.stringify({ error: 'Method not allowed' }) };
-  }
-
-  // ── Token ───────────────────────────────────────────────────────────────────
   const token = process.env.MP_ACCESS_TOKEN;
-  if (!token) {
-    console.error('MP_ACCESS_TOKEN no configurado');
-    return { statusCode: 500, headers: CORS, body: JSON.stringify({ error: 'Token MP no configurado en Netlify' }) };
-  }
+  if (!token) return { statusCode: 500, headers: CORS, body: JSON.stringify({ error: 'Token MP no configurado' }) };
 
-  // ── Parsear body ────────────────────────────────────────────────────────────
   let data;
-  try {
-    data = JSON.parse(event.body || '{}');
-  } catch (e) {
-    return { statusCode: 400, headers: CORS, body: JSON.stringify({ error: 'JSON inválido' }) };
-  }
+  try { data = JSON.parse(event.body || '{}'); }
+  catch(e) { return { statusCode: 400, headers: CORS, body: JSON.stringify({ error: 'JSON inválido' }) }; }
 
   const { order_id, items, customer, back_urls } = data;
+  if (!items || !items.length) return { statusCode: 400, headers: CORS, body: JSON.stringify({ error: 'items requeridos' }) };
 
-  if (!items || !items.length) {
-    return { statusCode: 400, headers: CORS, body: JSON.stringify({ error: 'items requeridos' }) };
-  }
-
-  // ── Armar preferencia MP ────────────────────────────────────────────────────
   const preference = {
-    external_reference: order_id || Date.now().toString(),
+    external_reference  : order_id || Date.now().toString(),
+    notification_url    : WEBHOOK_URL,
 
     items: items.map(item => ({
       id          : String(item.id),
       title       : String(item.title).substring(0, 256),
-      unit_price  : Math.round(Number(item.unit_price)),   // CLP = entero
+      unit_price  : Math.round(Number(item.unit_price)),
       quantity    : Math.round(Number(item.quantity)),
       currency_id : 'CLP'
     })),
@@ -73,16 +58,11 @@ exports.handler = async (event) => {
     auto_return        : 'approved',
     statement_descriptor: 'SYA STORE',
 
-    // Desactiva pagos en efectivo (Klap, etc.) — solo tarjeta y saldo MP
     payment_methods: {
-      excluded_payment_types: [
-        { id: 'ticket' },
-        { id: 'atm' }
-      ]
+      excluded_payment_types: [{ id: 'ticket' }, { id: 'atm' }]
     }
   };
 
-  // ── Llamar API MercadoPago ──────────────────────────────────────────────────
   try {
     const mpRes = await fetch('https://api.mercadopago.com/checkout/preferences', {
       method : 'POST',
@@ -98,11 +78,7 @@ exports.handler = async (event) => {
 
     if (!mpRes.ok) {
       console.error('MP API error:', JSON.stringify(mpData));
-      return {
-        statusCode: 502,
-        headers   : CORS,
-        body      : JSON.stringify({ error: 'Error de MercadoPago', detail: mpData })
-      };
+      return { statusCode: 502, headers: CORS, body: JSON.stringify({ error: 'Error de MercadoPago', detail: mpData }) };
     }
 
     console.log(`✓ Preferencia creada: ${mpData.id} | Orden: ${order_id}`);
@@ -117,12 +93,8 @@ exports.handler = async (event) => {
       })
     };
 
-  } catch (err) {
-    console.error('Error en función MP:', err.message);
-    return {
-      statusCode: 500,
-      headers   : CORS,
-      body      : JSON.stringify({ error: err.message })
-    };
+  } catch(e) {
+    console.error('Error en función MP:', e.message);
+    return { statusCode: 500, headers: CORS, body: JSON.stringify({ error: e.message }) };
   }
 };
